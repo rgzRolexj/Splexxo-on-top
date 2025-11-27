@@ -1,87 +1,123 @@
 // ==================== CONFIG =====================
-const YOUR_API_KEYS = ["SPLEXXO"];
-const TARGET_API = "https://numinfo.gauravcyber0.workers.dev/";
+const YOUR_API_KEYS = ["SPLEXXO"]; // tumhara private key
+const TARGET_API = "https://numinfo.gauravcyber0.workers.dev/"; // original API
+const CACHE_TIME = 3600 * 1000; // 1 hour (ms)
 // =================================================
 
-export default async function handler(req, res) {
-  // CORS headers
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-  
-  // Handle OPTIONS request
-  if (req.method === 'OPTIONS') {
-    return res.status(200).end();
+const cache = new Map();
+
+// Helper: recursively clean unwanted fields
+function cleanResponse(value) {
+  if (typeof value === "string") {
+    return value.replace(/@oxmzoo/gi, "").trim();
   }
-
-  // Sirf GET allow karo
-  if (req.method !== 'GET') {
-    return res.status(405).json({ 
-      success: false,
-      error: "Method not allowed" 
-    });
+  if (Array.isArray(value)) {
+    return value.map(cleanResponse);
   }
-
-  // Query parameters lo
-  const { mobile, key } = req.query;
-
-  // Check parameters
-  if (!mobile) {
-    return res.status(400).json({ 
-      success: false,
-      error: "Mobile number is required",
-      example: "?mobile=9919471212&key=SPLEXXO"
-    });
-  }
-
-  if (!key) {
-    return res.status(400).json({ 
-      success: false,
-      error: "API key is required",
-      example: "?mobile=9919471212&key=SPLEXXO"
-    });
-  }
-
-  // API key verify karo
-  if (!YOUR_API_KEYS.includes(key)) {
-    return res.status(403).json({ 
-      success: false,
-      error: "Invalid API key"
-    });
-  }
-
-  // Mobile number clean karo
-  const cleanMobile = mobile.toString().replace(/\D/g, '');
-
-  // Target API call karo
-  try {
-    const apiUrl = `${TARGET_API}?mobile=${cleanMobile}`;
-    const response = await fetch(apiUrl);
-
-    if (!response.ok) {
-      return res.status(500).json({ 
-        success: false,
-        error: "Number info service unavailable",
-        status: response.status
-      });
+  if (value && typeof value === "object") {
+    const cleaned = {};
+    for (const key of Object.keys(value)) {
+      if (key.toLowerCase().includes("oxmzoo")) continue;
+      cleaned[key] = cleanResponse(value[key]);
     }
+    return cleaned;
+  }
+  return value;
+}
 
-    const data = await response.json();
+export default async function handler(req, res) {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  
+  // Sirf GET allow
+  if (req.method !== "GET") {
+    res.setHeader("Content-Type", "application/json; charset=utf-8");
+    return res.status(405).json({ error: "method not allowed" });
+  }
 
-    // Success response with branding
-    return res.status(200).json({
-      success: true,
-      ...data,
-      developer: "splexxo",
-      powered_by: "splexxo Number Info API"
-    });
+  const { mobile: rawMobile, key: rawKey } = req.query || {};
 
-  } catch (error) {
-    // Error handling
-    return res.status(500).json({ 
-      success: false,
-      error: "Internal server error",
-      message: error.message
+  // Param check
+  if (!rawMobile || !rawKey) {
+    res.setHeader("Content-Type", "application/json; charset=utf-8");
+    return res.status(400).json({ error: "missing parameters: mobile or key" });
+  }
+
+  // Sirf digits rakho
+  const mobile = String(rawMobile).replace(/\D/g, "");
+  const key = String(rawKey).trim();
+
+  // API key check
+  if (!YOUR_API_KEYS.includes(key)) {
+    res.setHeader("Content-Type", "application/json; charset=utf-8");
+    return res.status(403).json({ error: "invalid key" });
+  }
+
+  if (mobile.length < 10) {
+    res.setHeader("Content-Type", "application/json; charset=utf-8");
+    return res.status(400).json({ error: "invalid mobile number" });
+  }
+
+  // Cache check
+  const now = Date.now();
+  const cached = cache.get(mobile);
+
+  if (cached && now - cached.timestamp < CACHE_TIME) {
+    res.setHeader("X-Proxy-Cache", "HIT");
+    res.setHeader("Content-Type", "application/json; charset=utf-8");
+    return res.status(200).send(cached.response);
+  }
+
+  // Upstream URL build
+  const url = `${TARGET_API}?mobile=${encodeURIComponent(mobile)}`;
+
+  try {
+    const upstream = await fetch(url);
+    const raw = await upstream.text();
+
+    if (!upstream.ok || !raw) {  
+      res.setHeader("Content-Type", "application/json; charset=utf-8");  
+      return res.status(502).json({  
+        error: "upstream API failed",  
+        details: `HTTP ${upstream.status}`,  
+      });  
+    }  
+
+    let responseBody;  
+
+    try {  
+      // JSON parse try  
+      let data = JSON.parse(raw);  
+
+      // Saare data se unwanted fields clean karo  
+      data = cleanResponse(data);  
+
+      // Apni clean branding  
+      data.developer = "splexxo";
+      data.credit_by = "splexx";
+      data.powered_by = "splexxo-info-api";
+
+      responseBody = JSON.stringify(data);  
+    } catch {  
+      // Agar JSON nahi hai to raw text me se bhi clean karo  
+      const cleanedText = raw.replace(/@oxmzoo/gi, "").trim();  
+      responseBody = cleanedText;  
+    }  
+
+    // Cache save  
+    cache.set(mobile, {  
+      timestamp: Date.now(),  
+      response: responseBody,  
+    });  
+
+    res.setHeader("X-Proxy-Cache", "MISS");  
+    res.setHeader("Content-Type", "application/json; charset=utf-8");  
+    return res.status(200).send(responseBody);
+
+  } catch (err) {
+    res.setHeader("Content-Type", "application/json; charset=utf-8");
+    return res.status(502).json({
+      error: "upstream request error",
+      details: err.message || "unknown error",
     });
   }
 }
