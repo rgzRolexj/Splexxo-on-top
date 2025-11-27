@@ -1,10 +1,7 @@
 // ==================== CONFIG =====================
 const YOUR_API_KEYS = ["SPLEXXO"];
 const TARGET_API = "https://numinfo.gauravcyber0.workers.dev/";
-const CACHE_TIME = 3600 * 1000;
 // =================================================
-
-const cache = new Map();
 
 export default async function handler(req, res) {
   // CORS headers
@@ -12,75 +9,79 @@ export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   
-  if (req.method === 'OPTIONS') return res.status(200).end();
-  if (req.method !== 'GET') return res.status(405).json({ error: "Method not allowed" });
+  // Handle OPTIONS request
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
+  }
 
-  const { mobile, phone, key } = req.query;
-  const phoneNumber = mobile || phone;
-
-  // Param check
-  if (!phoneNumber || !key) {
-    return res.status(400).json({ 
-      error: "Missing parameters", 
-      details: "Use: ?mobile=Number&key=SPLEXXO" 
+  // Sirf GET allow karo
+  if (req.method !== 'GET') {
+    return res.status(405).json({ 
+      success: false,
+      error: "Method not allowed" 
     });
   }
 
-  const cleanPhone = String(phoneNumber).replace(/\D/g, "");
-  const cleanKey = String(key).trim();
+  // Query parameters lo
+  const { mobile, key } = req.query;
 
-  // API key check
-  if (!YOUR_API_KEYS.includes(cleanKey)) {
-    return res.status(403).json({ error: "Invalid API key" });
+  // Check parameters
+  if (!mobile) {
+    return res.status(400).json({ 
+      success: false,
+      error: "Mobile number is required",
+      example: "?mobile=9919471212&key=SPLEXXO"
+    });
   }
 
-  // Cache check
-  const now = Date.now();
-  const cached = cache.get(cleanPhone);
-  if (cached && now - cached.timestamp < CACHE_TIME) {
-    res.setHeader('X-Proxy-Cache', 'HIT');
-    return res.status(200).json(cached.data);
+  if (!key) {
+    return res.status(400).json({ 
+      success: false,
+      error: "API key is required",
+      example: "?mobile=9919471212&key=SPLEXXO"
+    });
   }
 
-  // Number Info API call
-  const url = `${TARGET_API}?mobile=${cleanPhone}`;
+  // API key verify karo
+  if (!YOUR_API_KEYS.includes(key)) {
+    return res.status(403).json({ 
+      success: false,
+      error: "Invalid API key"
+    });
+  }
 
+  // Mobile number clean karo
+  const cleanMobile = mobile.toString().replace(/\D/g, '');
+
+  // Target API call karo
   try {
-    const response = await fetch(url);
-    
+    const apiUrl = `${TARGET_API}?mobile=${cleanMobile}`;
+    const response = await fetch(apiUrl);
+
     if (!response.ok) {
-      return res.status(502).json({ 
-        error: "Number API failed", 
+      return res.status(500).json({ 
+        success: false,
+        error: "Number info service unavailable",
         status: response.status
       });
     }
 
     const data = await response.json();
 
-    // Add branding and format response
-    const finalData = {
+    // Success response with branding
+    return res.status(200).json({
+      success: true,
       ...data,
-      number: cleanPhone,
       developer: "splexxo",
-      powered_by: "splexxo Number Info API",
-      timestamp: new Date().toISOString(),
-      cached: false
-    };
-
-    // Save to cache
-    cache.set(cleanPhone, {
-      timestamp: now,
-      data: { ...finalData, cached: true }
+      powered_by: "splexxo Number Info API"
     });
 
-    res.setHeader('X-Proxy-Cache', 'MISS');
-    return res.status(200).json(finalData);
-
   } catch (error) {
-    return res.status(500).json({
-      error: "API request failed",
-      details: error.message,
-      developer: "splexxo"
+    // Error handling
+    return res.status(500).json({ 
+      success: false,
+      error: "Internal server error",
+      message: error.message
     });
   }
 }
